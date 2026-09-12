@@ -1,0 +1,133 @@
+// ptypoll_tests.nv — the set with no ceiling, and the hangup that is
+// not a read.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`.
+//
+// THE SET AND THE ANSWER ARE BOTH `[]`, so the two bugs this module
+// exists to prevent are assertable with no pty anywhere: a set that
+// truncates past sixteen, and a loop that cannot tell a hung-up
+// descriptor from a readable one.
+
+use ptymodel
+use ptypoll
+use std.list
+use std.test
+
+fn a_master(i: Int) -> ptymodel.PtyMaster
+    PtyMaster { fd: 100 + i }
+
+fn masters(n: Int) -> [ptymodel.PtyMaster]
+    list.map(list.range(0, n), a_master)
+
+@test
+fn test_a_set_of_seventeen_is_a_set_of_seventeen() [io]
+    // The cap this package does not have.  A poll that took sixteen
+    // and silently dropped the rest is a multiplexer whose
+    // seventeenth pane never updates — and nothing reports it,
+    // because a truncated poll looks exactly like a quiet pane.
+    let s = ptypoll.poll_set(masters(17))
+
+    test.case("all of them")
+    test.assert(ptypoll.set_len(s) == 17)
+
+@test
+fn test_an_empty_set_is_allowed_and_is_how_a_pump_ends() [io]
+    // The loop condition in the README's example: a multiplexer whose
+    // last pane exited has an empty set, and that is the exit rather
+    // than an error.
+    test.case("zero")
+    test.assert(ptypoll.set_len(ptypoll.poll_set([])) == 0)
+
+@test
+fn test_dropping_a_pane_shortens_the_set_by_one() [io]
+    // By INDEX, matching the indices a `PtyReady` answers in, so a
+    // pump drops the pane from its own list and from the set in one
+    // step rather than looking a descriptor up in both.
+    match ptypoll.drop_at(ptypoll.poll_set(masters(3)), 1)
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            test.case("two left")
+            test.assert(ptypoll.set_len(s) == 2)
+
+@test
+fn test_dropping_past_the_end_is_refused_and_says_both_numbers() [io]
+    // An off-by-one in a pump's teardown is the kind of thing that
+    // happens under load, and an error naming the index and the length
+    // is the difference between finding it and guessing.
+    match ptypoll.drop_at(ptypoll.poll_set(masters(3)), 9)
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                PtyIndexOutOfRange(i, n) =>
+                    test.case("the index")
+                    test.assert(i == 9)
+
+                    test.case("and the length")
+                    test.assert(n == 3)
+
+                _                        => test.assert(false)
+
+@test
+fn test_the_master_at_an_index_is_the_one_that_went_in() [io]
+    match ptypoll.master_at(ptypoll.poll_set(masters(3)), 2)
+        Err(_) => test.assert(false)
+        Ok(m)  =>
+            test.case("the third one")
+            test.assert(m.fd == 102)
+
+@test
+fn test_the_extra_descriptor_is_separate_from_the_ptys() [io]
+    // The host terminal, a control socket, a display connection: all
+    // of them have to wake the same loop, and a loop polling only its
+    // ptys answers a keystroke on the next pty's timeout.
+    let s = ptypoll.with_extra(ptypoll.poll_set(masters(2)), 0)
+
+    test.case("still two masters")
+    test.assert(ptypoll.set_len(s) == 2)
+
+    test.case("and the extra is not one of them")
+    test.assert(s.extra_fd == 0)
+
+@test
+fn test_a_hung_up_descriptor_is_not_reported_as_readable() [io]
+    // THE BUG THIS WHOLE MODULE IS SHAPED AROUND.  A descriptor whose
+    // child has exited is permanently ready: every poll returns at
+    // once, forever.  A loop that tested only "readable", read zero
+    // bytes and went round again spins at a hundred per cent of a
+    // core — and it looks like a performance problem rather than a
+    // logic error, which is why it survives review.
+    let r = PtyReady { readable: [], hungup: [1], extra_ready: false, timed_out: false }
+
+    test.case("not readable")
+    test.assert(not ptypoll.is_readable(r, 1))
+
+    test.case("hung up")
+    test.assert(ptypoll.is_hungup(r, 1))
+
+    test.case("and something did happen")
+    test.assert(ptypoll.anything_ready(r))
+
+@test
+fn test_a_timeout_is_a_tick_and_not_a_failure() [io]
+    // How a pump gets its frame: nothing to read, nothing hung up, go
+    // and draw.
+    let r = PtyReady { readable: [], hungup: [], extra_ready: false, timed_out: true }
+
+    test.case("nothing ready")
+    test.assert(not ptypoll.anything_ready(r))
+
+    test.case("and it timed out")
+    test.assert(r.timed_out)
+
+@test
+fn test_readiness_is_by_index_into_the_set_that_produced_it() [io]
+    let r = PtyReady { readable: [0, 2], hungup: [], extra_ready: false, timed_out: false }
+
+    test.case("the first")
+    test.assert(ptypoll.is_readable(r, 0))
+
+    test.case("not the second")
+    test.assert(not ptypoll.is_readable(r, 1))
+
+    test.case("and the third")
+    test.assert(ptypoll.is_readable(r, 2))

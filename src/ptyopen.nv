@@ -1,0 +1,235 @@
+// ptyopen.nv — a pty pair, and a child started on the slave.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHAT A SPAWN HAS TO GET RIGHT, in the order the child notices:
+//
+//   1. The size is baked in BEFORE the exec, so the child's first
+//      `TIOCGWINSZ` is already right.  A full-screen program that had
+//      to be resized after starting draws one visible frame wrong.
+//   2. The slave becomes the child's CONTROLLING terminal — a
+//      `setsid` and a `TIOCSCTTY` — because without it the kernel
+//      raises no SIGINT on Ctrl-C and job control does not work, and
+//      the symptom a user reports is "Ctrl-C does nothing in this
+//      pane".
+//   3. The signal dispositions are reset.  `SIG_IGN` survives both
+//      fork AND exec, so a child spawned by a daemon that ignores
+//      SIGHUP inherits "ignore SIGHUP" — and then a kill-pane
+//      delivers the signal successfully and the shell discards it, and
+//      the pane never dies.  It reproduces only through the daemon
+//      path, which is why a whole test suite can miss it.
+//   4. The parent's copy of the slave is closed.  A slave the parent
+//      still holds open never reports EOF when the child exits, and a
+//      pump waiting for that EOF waits forever.
+//
+// All four are in `spawn`, and none of them is a caller's to remember.
+
+use ptymodel
+use tioattrs
+use tiosize
+
+// Open a pty pair at a size, with no child on it yet.
+//
+// For the caller who wants the slave for something other than an
+// immediate exec: handing it to a process started some other way,
+// making it this process's controlling terminal, or opening a pane
+// before deciding what goes in it.
+//
+// ```novo
+// use ptyopen
+// use tiosize
+//
+// fn open() -> Result<PtyPair, PtyError> [io]
+//     ptyopen.open_pair(tiosize.win_size(24, 80))
+// ```
+pub fn open_pair(size: tiosize.TioWinSize) -> Result<ptymodel.PtyPair, ptymodel.PtyError> [io]
+    todo("pty-nv.ptyopen.open_pair")
+
+// A spawn request for a program, with the defaults: the current
+// environment inherited, a sensible `TERM`, 24 x 80, the kernel's
+// attributes, and this process's working directory.
+//
+// ```novo
+// use ptyopen
+//
+// fn shell_request() -> PtySpawn [io]
+//     ptyopen.spawn_request([ptyopen.default_shell()])
+// ```
+pub fn spawn_request(argv: [Str]) -> ptymodel.PtySpawn []
+    todo("pty-nv.ptyopen.spawn_request")
+
+// The same request at a different size.
+//
+// ```novo
+// use ptyopen
+// use tiosize
+//
+// fn sized(r: PtySpawn) -> PtySpawn
+//     ptyopen.with_size(r, tiosize.win_size(50, 200))
+// ```
+pub fn with_size(req: ptymodel.PtySpawn, size: tiosize.TioWinSize) -> ptymodel.PtySpawn []
+    todo("pty-nv.ptyopen.with_size")
+
+// The same request with one more environment variable.
+//
+// ```novo
+// use ptyopen
+//
+// fn marked(r: PtySpawn) -> PtySpawn
+//     ptyopen.with_env(r, "NOVOMUX", "1")
+// ```
+pub fn with_env(req: ptymodel.PtySpawn, name: Str, value: Str) -> ptymodel.PtySpawn []
+    todo("pty-nv.ptyopen.with_env")
+
+// The same request with a different `$TERM`.
+//
+// The value describes what is READING the master, because that is the
+// terminal the child is talking to.  A program that forwards its
+// output to a host terminal wants what it can actually render, not
+// what its host claims.
+//
+// ```novo
+// use ptyopen
+//
+// fn plain(r: PtySpawn) -> PtySpawn
+//     ptyopen.with_term(r, "xterm-256color")
+// ```
+pub fn with_term(req: ptymodel.PtySpawn, term: Str) -> ptymodel.PtySpawn []
+    todo("pty-nv.ptyopen.with_term")
+
+// The same request starting somewhere else.
+//
+// ```novo
+// use ptyopen
+//
+// fn at_home(r: PtySpawn) -> PtySpawn
+//     ptyopen.with_cwd(r, "/home")
+// ```
+pub fn with_cwd(req: ptymodel.PtySpawn, dir: Str) -> ptymodel.PtySpawn []
+    todo("pty-nv.ptyopen.with_cwd")
+
+// The same request with the slave's attributes chosen rather than left
+// to the kernel.
+//
+// Applied BEFORE the exec, which is the point: turning echo off after
+// the child has started leaves a window in which a password is
+// echoed.
+//
+// ```novo
+// use ptyopen
+// use tioattrs
+//
+// fn quiet(r: PtySpawn, a: TioAttrs) -> PtySpawn
+//     ptyopen.with_attrs(r, a)
+// ```
+pub fn with_attrs(req: ptymodel.PtySpawn, a: tioattrs.TioAttrs) -> ptymodel.PtySpawn []
+    todo("pty-nv.ptyopen.with_attrs")
+
+// The same request with the parent's environment NOT inherited, so
+// `env` is the whole of what the child gets.
+//
+// ```novo
+// use ptyopen
+//
+// fn minimal(r: PtySpawn) -> PtySpawn
+//     ptyopen.without_parent_env(r)
+// ```
+pub fn without_parent_env(req: ptymodel.PtySpawn) -> ptymodel.PtySpawn []
+    todo("pty-nv.ptyopen.without_parent_env")
+
+// `$SHELL`, or `/bin/sh` when it is unset or empty.
+//
+// The convention `script(1)`, `tmux` and `screen` all use for deciding
+// what to start when nobody said.
+//
+// ```novo
+// use ptyopen
+//
+// fn which() -> Str [io]
+//     ptyopen.default_shell()
+// ```
+pub fn default_shell() -> Str [io]
+    todo("pty-nv.ptyopen.default_shell")
+
+// The argv that starts a shell as a LOGIN shell: `argv[0]` with a
+// leading `-`.
+//
+// A forty-year-old convention with no other spelling, and what a user
+// sees is whether their profile was read — so a multiplexer whose
+// first pane skipped it has a pane with a different `PATH` from every
+// other terminal on the machine.
+//
+// ```novo
+// use ptyopen
+//
+// fn argv() -> [Str] [io]
+//     ptyopen.login_argv(ptyopen.default_shell())
+// ```
+pub fn login_argv(shell: Str) -> [Str] []
+    todo("pty-nv.ptyopen.login_argv")
+
+// The environment the child would actually get, resolved.
+//
+// `[io]` because it reads this process's own environment to resolve
+// the inheritance.  Exposed because "what did my pane's shell start
+// with" is a question a multiplexer's user asks, and because a test
+// can assert the answer without starting anything.
+//
+// ```novo
+// use ptyopen
+//
+// fn env_of(r: PtySpawn) -> [PtyEnvVar] [io]
+//     ptyopen.environment_of(r)
+// ```
+pub fn environment_of(req: ptymodel.PtySpawn) -> [ptymodel.PtyEnvVar] [io]
+    todo("pty-nv.ptyopen.environment_of")
+
+// ── Starting a child ───────────────────────────────────────────────
+
+// Open a pair and start the child on it.
+//
+// The one call almost every caller makes, and the four things listed
+// at the top of this file are all inside it.
+//
+// ```novo
+// use ptyopen
+//
+// fn shell() -> Result<PtySession, PtyError> [io]
+//     ptyopen.spawn(ptyopen.spawn_request([ptyopen.default_shell()]))
+// ```
+pub fn spawn(req: ptymodel.PtySpawn) -> Result<ptymodel.PtySession, ptymodel.PtyError> [io]
+    todo("pty-nv.ptyopen.spawn")
+
+// Start a child on a pair the caller already opened.
+//
+// Consumes the pair: the slave is the child's now, and the parent's
+// copy is closed on the way.
+//
+// ```novo
+// use ptyopen
+//
+// fn on(p: PtyPair, r: PtySpawn) -> Result<PtySession, PtyError> [io]
+//     ptyopen.spawn_on(p, r)
+// ```
+pub fn spawn_on(pair: ptymodel.PtyPair,
+                req: ptymodel.PtySpawn) -> Result<ptymodel.PtySession, ptymodel.PtyError> [io]
+    todo("pty-nv.ptyopen.spawn_on")
+
+// Close the master and hang up the child, in that order.
+//
+// The teardown a pump runs when a pane goes away: closing the master
+// makes the child's next read answer EOF, most programs exit on that,
+// and the SIGHUP to the process group is for the ones that do not.
+//
+// The exit status is read with `ptychild.wait` and is still available
+// afterwards, because `PtyExit` is an ordinary value rather than a row
+// in a table this close would free.
+//
+// ```novo
+// use ptyopen
+//
+// fn shut(s: PtySession) -> ?PtyError [io]
+//     ptyopen.close_session(s)
+// ```
+pub fn close_session(s: ptymodel.PtySession) -> ?ptymodel.PtyError [io]
+    todo("pty-nv.ptyopen.close_session")

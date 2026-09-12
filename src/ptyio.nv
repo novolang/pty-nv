@@ -1,0 +1,283 @@
+// ptyio.nv — reading and writing the master, and resizing it.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A CHUNK AT A TIME, NOT A BYTE AT A TIME.  A pty master delivers a
+// shell's output in bursts of kilobytes — a `cat` of a large file, a
+// build's log, a full-screen redraw — and a surface that answers one
+// byte per call turns each of those into thousands of calls across the
+// boundary between novo-lang and the runtime.  `read` takes the
+// caller's buffer and appends to it, which is the shape ansi-nv,
+// keymap-nv and termios-nv all take, so a pump reads a chunk and feeds
+// the same list straight into a parser with no copy in between.
+//
+// A SHORT WRITE IS NOT AN ERROR HERE, AND IN termios-nv IT IS.  The
+// difference is real: a terminal's write buffer fills only when
+// something is badly wrong, so a half-written escape sequence means a
+// caller has to reason about a terminal in an unknown state.  A pty
+// master's buffer fills whenever the CHILD is not reading, which is
+// every time a program pauses to think — and a multiplexer that
+// treated that as an error would kill a pane running a slow build.  So
+// `write` answers how many bytes went, and `write_all` is the loop for
+// a caller who would rather block.
+//
+// RESIZE IS NOT A NOTIFICATION, IT IS THE NOTIFICATION.  `TIOCSWINSZ`
+// on the master makes the kernel raise SIGWINCH in the child's
+// foreground process group, so `vim`, `less` and `htop` redraw at the
+// new geometry by themselves.  A caller does not also send a signal,
+// and a caller that did would send it to the wrong process.
+
+use ptymodel
+use tioattrs
+use tiosize
+
+// Read up to `max` bytes off the master, appending to `out`.
+//
+// Three answers in one value and two of them are not errors:
+// `would_block` on a non-blocking master with nothing pending, and
+// `at_eof` when the child's last copy of the slave closed — which is
+// how a pump learns to reap.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+//
+// fn drain(m: PtyMaster, buf: [u8]) -> Result<PtyRead, PtyError> [io]
+//     ptyio.read(m, buf, 4096)
+// ```
+pub fn read(m: ptymodel.PtyMaster, out: [u8],
+            max: Int) -> Result<ptymodel.PtyRead, ptymodel.PtyError> [io]
+    todo("pty-nv.ptyio.read")
+
+// Write bytes to the master; they arrive as the child's input.
+//
+// Answers how many went.  A SHORT WRITE IS NORMAL — see the header —
+// so a caller either loops on the remainder or keeps it and writes it
+// on the next tick, which is what a multiplexer with a keyboard
+// already does.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+//
+// fn send(m: PtyMaster, data: [u8]) -> Result<Int, PtyError> [io]
+//     ptyio.write(m, data)
+// ```
+pub fn write(m: ptymodel.PtyMaster, data: [u8]) -> Result<Int, ptymodel.PtyError> [io]
+    todo("pty-nv.ptyio.write")
+
+// Write everything, blocking until it has gone.
+//
+// The convenience for a caller who is not running a loop, and the one
+// to avoid in a pump: a child that has stopped reading makes this wait
+// for as long as it stays stopped, and a multiplexer that waited there
+// has frozen every other pane.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+//
+// fn send_all(m: PtyMaster, data: [u8]) -> Result<Int, PtyError> [io]
+//     ptyio.write_all(m, data)
+// ```
+pub fn write_all(m: ptymodel.PtyMaster, data: [u8]) -> Result<Int, ptymodel.PtyError> [io]
+    todo("pty-nv.ptyio.write_all")
+
+// Put the master into non-blocking mode, or take it out.
+//
+// On is what a pump wants — a read that answers `would_block` is a
+// read that lets the loop get on with the other panes.  Off is for a
+// caller doing one thing at a time.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+//
+// fn unblock(m: PtyMaster) -> ?PtyError [io]
+//     ptyio.set_nonblocking(m, true)
+// ```
+pub fn set_nonblocking(m: ptymodel.PtyMaster, on: Bool) -> ?ptymodel.PtyError [io]
+    todo("pty-nv.ptyio.set_nonblocking")
+
+// Whether the master is non-blocking.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+//
+// fn asks(m: PtyMaster) -> Bool [io]
+//     ptyio.is_nonblocking(m)
+// ```
+pub fn is_nonblocking(m: ptymodel.PtyMaster) -> Bool [io]
+    todo("pty-nv.ptyio.is_nonblocking")
+
+// ── Size ───────────────────────────────────────────────────────────
+
+// Tell the child how big its terminal is now.
+//
+// `TIOCSWINSZ` on the master, which makes the kernel raise SIGWINCH in
+// the child's foreground process group.  That IS the notification: a
+// caller sends no signal of its own.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+// use tiosize
+//
+// fn relay(m: PtyMaster, s: TioWinSize) -> ?PtyError [io]
+//     ptyio.resize(m, s)
+// ```
+pub fn resize(m: ptymodel.PtyMaster, s: tiosize.TioWinSize) -> ?ptymodel.PtyError [io]
+    todo("pty-nv.ptyio.resize")
+
+// What the child currently believes its size to be.
+//
+// The read side of `resize`, and what a multiplexer compares against
+// before relaying a host resize it may already have relayed.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+// use tiosize
+//
+// fn what(m: PtyMaster) -> Result<TioWinSize, PtyError> [io]
+//     ptyio.size_of(m)
+// ```
+pub fn size_of(m: ptymodel.PtyMaster) -> Result<tiosize.TioWinSize, ptymodel.PtyError> [io]
+    todo("pty-nv.ptyio.size_of")
+
+// ── The slave's attributes ─────────────────────────────────────────
+
+// The slave's termios attributes.
+//
+// termios-nv's value, because the slave is a terminal and there is
+// exactly one right way to describe one.  For a caller that opened a
+// pair and has not spawned yet; after a spawn the attributes belong to
+// the child, and changing them under a running program is a race the
+// child will lose.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+// use tioattrs
+//
+// fn attrs(s: PtySlave) -> Result<TioAttrs, PtyError> [io]
+//     ptyio.slave_attrs(s)
+// ```
+pub fn slave_attrs(s: ptymodel.PtySlave) -> Result<tioattrs.TioAttrs, ptymodel.PtyError> [io]
+    todo("pty-nv.ptyio.slave_attrs")
+
+// Set the slave's attributes.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+// use tioattrs
+//
+// fn set(s: PtySlave, a: TioAttrs) -> ?PtyError [io]
+//     ptyio.set_slave_attrs(s, a)
+// ```
+pub fn set_slave_attrs(s: ptymodel.PtySlave, a: tioattrs.TioAttrs) -> ?ptymodel.PtyError [io]
+    todo("pty-nv.ptyio.set_slave_attrs")
+
+// The master as a termios-nv terminal.
+//
+// The bridge between the two packages, and the reason the dependency
+// is not decoration: a master IS a terminal, so everything termios-nv
+// can do to one — read its attributes, poll its size, write an escape
+// sequence at it — applies here with no second surface.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+// use tioattrs
+//
+// fn as_terminal(m: PtyMaster) -> Result<TioFd, PtyError> [io]
+//     ptyio.master_terminal(m)
+// ```
+pub fn master_terminal(m: ptymodel.PtyMaster) -> Result<tioattrs.TioFd, ptymodel.PtyError> [io]
+    todo("pty-nv.ptyio.master_terminal")
+
+// The slave as a termios-nv terminal.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+// use tioattrs
+//
+// fn as_terminal(s: PtySlave) -> Result<TioFd, PtyError> [io]
+//     ptyio.slave_terminal(s)
+// ```
+pub fn slave_terminal(s: ptymodel.PtySlave) -> Result<tioattrs.TioFd, ptymodel.PtyError> [io]
+    todo("pty-nv.ptyio.slave_terminal")
+
+// ── Descriptors ────────────────────────────────────────────────────
+
+// The master's descriptor number, for a caller passing it to a poll
+// this package does not wrap.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+//
+// fn fd(m: PtyMaster) -> Int
+//     ptyio.master_fd(m)
+// ```
+pub fn master_fd(m: ptymodel.PtyMaster) -> Int []
+    todo("pty-nv.ptyio.master_fd")
+
+// The slave's descriptor number.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+//
+// fn fd(s: PtySlave) -> Int
+//     ptyio.slave_fd(s)
+// ```
+pub fn slave_fd(s: ptymodel.PtySlave) -> Int []
+    todo("pty-nv.ptyio.slave_fd")
+
+// The slave's `/dev/pts/N` path.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+//
+// fn path(s: PtySlave) -> Str
+//     ptyio.slave_name(s)
+// ```
+pub fn slave_name(s: ptymodel.PtySlave) -> Str []
+    todo("pty-nv.ptyio.slave_name")
+
+// Close the master.
+//
+// The child's next read answers EOF after this, which is how most
+// programs learn to exit.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+//
+// fn shut(m: PtyMaster) [io]
+//     ptyio.close_master(m)
+// ```
+pub fn close_master(m: ptymodel.PtyMaster) [io]
+    todo("pty-nv.ptyio.close_master")
+
+// Close the parent's copy of the slave.
+//
+// `spawn` does this already.  It is public for the caller who opened a
+// pair, handed the slave somewhere else, and has to let go of it — a
+// slave the parent still holds open never reports EOF, and a pump
+// waiting for that EOF waits forever.
+//
+// ```novo
+// use ptyio
+// use ptymodel
+//
+// fn let_go(s: PtySlave) [io]
+//     ptyio.close_slave(s)
+// ```
+pub fn close_slave(s: ptymodel.PtySlave) [io]
+    todo("pty-nv.ptyio.close_slave")

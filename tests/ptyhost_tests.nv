@@ -1,0 +1,292 @@
+// ptyhost_tests.nv — the half that opens descriptors and starts
+// processes, exercised where it is allowed to fail.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`.
+//
+// A CONTAINER WITH NO `/dev/pts` IS A REAL PLACE, and so is a build
+// sandbox that refuses a fork.  Every function here has to answer
+// rather than trap, because the alternative is a package that works on
+// a developer's machine and aborts in CI — and the two failures look
+// nothing alike from a log.
+
+use ptychild
+use ptyio
+use ptymodel
+use ptyopen
+use ptypoll
+use std.list
+use std.str
+use std.test
+use tioattrs
+use tiosize
+
+@test
+fn test_a_pair_can_be_opened_or_refused_with_a_reason() [io]
+    // `posix_openpt` refuses when `/dev/pts` is not mounted, which is
+    // what a minimal container looks like.  A refusal carries the
+    // errno because "could not open a pty" without one is a message
+    // nobody can act on.
+    match ptyopen.open_pair(ptymodel.default_spawn_size())
+        Err(_) => test.case("refused, which a container may well do")
+        Ok(p)  =>
+            test.case("the slave has a path")
+            test.assert(str.len(ptyio.slave_name(p.slave)) > 0)
+
+            test.case("and two different descriptors")
+            test.assert(ptyio.master_fd(p.master) != ptyio.slave_fd(p.slave))
+
+            ptyio.close_slave(p.slave)
+            ptyio.close_master(p.master)
+
+@test
+fn test_a_master_is_a_terminal_and_termios_nv_agrees() [io]
+    // The bridge between the two packages, and the reason the
+    // dependency is not decoration: a master IS a terminal, so
+    // everything termios-nv can do to one applies here with no second
+    // surface and no second `WinSize` type.
+    match ptyopen.open_pair(ptymodel.default_spawn_size())
+        Err(_) => test.case("no pty available here")
+        Ok(p)  =>
+            match ptyio.master_terminal(p.master)
+                Err(_) => test.assert(false)
+                Ok(t)  =>
+                    test.case("termios-nv took it")
+                    test.assert(tioattrs.fd_of(t) == ptyio.master_fd(p.master))
+
+            match ptyio.slave_terminal(p.slave)
+                Err(_) => test.assert(false)
+                Ok(_)  => test.case("and the slave too")
+
+            ptyio.close_slave(p.slave)
+            ptyio.close_master(p.master)
+
+@test
+fn test_a_pair_starts_at_the_size_it_was_opened_at() [io]
+    // Not applied afterwards: a child that had to be resized after
+    // starting draws one frame at the wrong geometry, and for a
+    // full-screen program that frame is visible.
+    let want = tiosize.win_size(40, 120)
+
+    match ptyopen.open_pair(want)
+        Err(_) => test.case("no pty available here")
+        Ok(p)  =>
+            match ptyio.size_of(p.master)
+                Err(_) => test.assert(false)
+                Ok(s)  =>
+                    test.case("the size it was asked for")
+                    test.assert(tiosize.size_eq(s, want))
+
+            ptyio.close_slave(p.slave)
+            ptyio.close_master(p.master)
+
+@test
+fn test_a_resize_is_accepted_and_read_back() [io]
+    // `TIOCSWINSZ` is the notification: the kernel raises SIGWINCH in
+    // the child's foreground process group, so a caller sends no
+    // signal of its own and one that did would send it to the wrong
+    // process.
+    match ptyopen.open_pair(ptymodel.default_spawn_size())
+        Err(_) => test.case("no pty available here")
+        Ok(p)  =>
+            let bigger = tiosize.win_size(50, 200)
+            test.case("accepted")
+            test.assert_none(ptyio.resize(p.master, bigger))
+
+            match ptyio.size_of(p.master)
+                Err(_) => test.assert(false)
+                Ok(s)  =>
+                    test.case("and read back")
+                    test.assert(tiosize.size_eq(s, bigger))
+
+            ptyio.close_slave(p.slave)
+            ptyio.close_master(p.master)
+
+@test
+fn test_a_non_blocking_master_answers_rather_than_waiting() [io]
+    // What a pump wants: a read that says "nothing right now" is a
+    // read that lets the loop get on with the other panes.  A blocking
+    // read on a quiet pane freezes every other one.
+    match ptyopen.open_pair(ptymodel.default_spawn_size())
+        Err(_) => test.case("no pty available here")
+        Ok(p)  =>
+            test.case("set")
+            test.assert_none(ptyio.set_nonblocking(p.master, true))
+
+            test.case("and reported")
+            test.assert(ptyio.is_nonblocking(p.master))
+
+            match ptyio.read(p.master, [], 4096)
+                Err(_) => test.assert(false)
+                Ok(r)  =>
+                    test.case("nothing to read, and that is not an error")
+                    test.assert(r.would_block or r.read_count == 0)
+
+            ptyio.close_slave(p.slave)
+            ptyio.close_master(p.master)
+
+@test
+fn test_a_write_reports_how_many_bytes_went() [io]
+    // A SHORT WRITE IS NOT AN ERROR on a pty master — its buffer fills
+    // whenever the child is not reading, which is every time a program
+    // pauses to think.  A multiplexer that treated that as a failure
+    // would kill a pane running a slow build.
+    match ptyopen.open_pair(ptymodel.default_spawn_size())
+        Err(_) => test.case("no pty available here")
+        Ok(p)  =>
+            match ptyio.write(p.master, [0x68, 0x69])
+                Err(_) => test.assert(false)
+                Ok(n)  =>
+                    test.case("a count, not a boolean")
+                    test.assert(n >= 0)
+
+            // The loop, for a caller who is not running one.  The one
+            // to avoid in a pump: a child that has stopped reading
+            // makes this wait for as long as it stays stopped, and a
+            // multiplexer that waited here has frozen every pane.
+            match ptyio.write_all(p.master, [0x6F, 0x6B])
+                Err(_) => test.assert(false)
+                Ok(n)  =>
+                    test.case("write_all wrote all of it")
+                    test.assert(n == 2)
+
+            ptyio.close_slave(p.slave)
+            ptyio.close_master(p.master)
+
+@test
+fn test_the_slaves_attributes_are_termios_nvs_value() [io]
+    // One right way to describe a terminal, and a pty slave is one.
+    match ptyopen.open_pair(ptymodel.default_spawn_size())
+        Err(_) => test.case("no pty available here")
+        Ok(p)  =>
+            match ptyio.slave_attrs(p.slave)
+                Err(_) => test.assert(false)
+                Ok(a)  =>
+                    test.case("a fresh slave is canonical, like any terminal")
+                    test.assert(tioattrs.flags_of(a).canonical)
+
+                    test.case("and it can be written back unchanged")
+                    test.assert_none(ptyio.set_slave_attrs(p.slave, a))
+
+            ptyio.close_slave(p.slave)
+            ptyio.close_master(p.master)
+
+@test
+fn test_a_spawn_of_something_that_does_not_exist_is_an_error_and_not_an_exit() [io]
+    // The whole reason for the close-on-exec pipe.  The conventional
+    // answer — a diagnostic on stderr and `_exit(127)` — cannot be
+    // told apart from a program that ran and exited 127, and those are
+    // different bugs with different fixes.
+    match ptyopen.spawn(ptyopen.spawn_request(["/nonexistent/definitely-not-a-program"]))
+        Ok(s)  =>
+            let _ = ptyopen.close_session(s)
+            test.assert(false)
+        Err(e) =>
+            match e
+                PtyExecFailed(program, _) =>
+                    test.case("and it names what it could not start")
+                    test.assert(str.len(program) > 0)
+                _                         => test.case("refused before the exec, which is also an answer")
+
+@test
+fn test_a_child_runs_signals_and_reports_how_it_ended() [io]
+    // The load-bearing claim, end to end: the status is read AFTER the
+    // descriptor has closed, in whichever order the caller's own code
+    // reads best, because `PtyExit` is a value and not a row in a table
+    // the close would free.
+    match ptyopen.spawn(ptyopen.spawn_request(["/bin/sh", "-c", "exit 3"]))
+        Err(_) => test.case("no pty available here")
+        Ok(s)  =>
+            test.case("it has a pid and a group")
+            test.assert(ptychild.pid_of(s.child) > 0)
+            test.assert(ptychild.pgid_of(s.child) > 0)
+
+            ptyio.close_master(s.master)
+
+            match ptychild.wait(s.child)
+                Err(_) => test.assert(false)
+                Ok(e)  =>
+                    test.case("and the status survived the close")
+                    test.assert(ptymodel.shell_status(e) == 3)
+
+@test
+fn test_terminate_escalates_rather_than_killing_at_once() [io]
+    // SIGTERM to the group, a grace period, then SIGKILL to whatever
+    // is still there.  Killing at once loses a shell's history file
+    // and an editor's swap file; waiting forever hangs on a program
+    // that caught SIGTERM and ignored it.
+    match ptyopen.spawn(ptyopen.spawn_request(["/bin/sh"]))
+        Err(_) => test.case("no pty available here")
+        Ok(s)  =>
+            test.case("running")
+            test.assert(ptychild.is_running(s.child))
+
+            match ptychild.terminate(s.child, 500)
+                Err(_) => test.assert(false)
+                Ok(e)  =>
+                    test.case("and it ended")
+                    test.assert(ptymodel.exit_is_final(e))
+
+            ptyio.close_master(s.master)
+
+@test
+fn test_the_foreground_group_is_what_the_user_is_typing_at() [io]
+    // Different from the child's own group as soon as the shell runs
+    // anything, which is how a status bar shows the running command
+    // rather than the word "bash".
+    match ptyopen.spawn(ptyopen.spawn_request(["/bin/sh"]))
+        Err(_) => test.case("no pty available here")
+        Ok(s)  =>
+            match ptychild.foreground_group(s.master)
+                Err(_) => test.assert(false)
+                Ok(g)  =>
+                    test.case("a real group")
+                    test.assert(g > 0)
+
+            let _ = ptychild.hangup(s.child)
+            let _ = ptychild.signal(s.child, PTY_SIGCONT)
+            let _ = ptychild.signal_group(s.child, PTY_SIGTERM)
+            let _ = ptychild.try_wait(s.child)
+            let _ = ptyopen.close_session(s)
+            test.case("and the session tore down")
+
+@test
+fn test_a_wait_on_a_set_of_live_panes_ticks_rather_than_hanging() [io]
+    // The pump's own tick: nothing ready inside the deadline is a
+    // frame to draw, not a failure.
+    match ptyopen.open_pair(ptymodel.default_spawn_size())
+        Err(_) => test.case("no pty available here")
+        Ok(p)  =>
+            let set = ptypoll.with_extra(ptypoll.poll_set([p.master]), 0 - 1)
+            match ptypoll.wait_ready(set, 10)
+                Err(_) => test.assert(false)
+                Ok(r)  =>
+                    test.case("it came back")
+                    test.assert(r.timed_out or ptypoll.anything_ready(r))
+
+            ptyio.close_slave(p.slave)
+            ptyio.close_master(p.master)
+
+@test
+fn test_the_environment_a_child_would_get_can_be_read_without_starting_it() [io]
+    // "What did my pane's shell start with" is a question a
+    // multiplexer's user asks, and a package where the only way to
+    // answer it is to fork cannot be asked it in a test at all.
+    let req = ptyopen.with_env(ptyopen.spawn_request([ptyopen.default_shell()]), "NOVOMUX", "1")
+
+    test.case("resolved without a fork")
+    test.assert(list.len(ptyopen.environment_of(req)) > 0)
+
+@test
+fn test_a_caller_may_open_a_pair_and_spawn_onto_it_later() [io]
+    // For the caller who wants the slave for something else first —
+    // handing it to a process started another way, or opening a pane
+    // before deciding what goes in it.
+    match ptyopen.open_pair(ptymodel.default_spawn_size())
+        Err(_) => test.case("no pty available here")
+        Ok(p)  =>
+            match ptyopen.spawn_on(p, ptyopen.spawn_request(["/bin/sh", "-c", "exit 0"]))
+                Err(_) => test.assert(false)
+                Ok(s)  =>
+                    test.case("started on the pair that was already open")
+                    test.assert(ptychild.pid_of(s.child) > 0)
+                    let _ = ptyopen.close_session(s)

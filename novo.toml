@@ -1,0 +1,53 @@
+[package]
+name        = "pty-nv"
+version     = "0.0.1"
+description = "Pseudoterminals as values: open a pair, spawn a child on the slave with an argv rather than a command string, read and write the master in chunks, resize so the kernel raises SIGWINCH in the child's process group, signal the group rather than the leader, and wait with an exit status that outlives the descriptor.  The readiness loop a multiplexer runs over many ptys, with no cap on how many.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `host`, and `[io]` is the whole of it.  The plan's row for this
+# package reads `[io, proc]`; `proc` IS NOT AN EFFECT — the labels an
+# effect clause accepts are the eleven in the `host` budget, and
+# `docs/publishing.md` § Design says why processes are among them:
+# "`[io]` covers pipes, processes and the environment and not only the
+# console, so dotenv, git plumbing, keyrings and pseudo-terminals all
+# need it".  Forking, exec'ing, signalling and reaping are all `[io]`
+# here, and `std.proc`'s own rows are `[io]` for the same reason.
+#
+# No `[time]` anywhere, which is a claim rather than an omission: the
+# readiness loop's timeout is an argument to a poll, not a reading of a
+# clock, and a wait that blocks does its waiting in the kernel.
+layer       = "host"
+
+category    = "terminal"
+
+tags        = ["pty", "pseudoterminal", "forkpty", "terminal", "multiplexer", "subprocess", "sigwinch", "winsize"]
+repository  = "https://github.com/novolang/pty-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "A pty pair, a child on it, and an exit status that outlives the descriptor"
+
+[dependencies]
+# The terminal attributes on the slave, and `TioWinSize`.  A pty pair
+# is two descriptors that are both terminals, so a package that models
+# one and then re-spelled `struct WinSize` and `struct Termios` would
+# have published two types a consumer of both cannot use together —
+# `docs/publishing.md` § Public type names are globally unique is the
+# rule, and this is the case it is for.
+#
+# A SIBLING PATH while the two are developed together; a published
+# package depends on published packages, so this converts to
+# `termios-nv = "^0.0.1"` before the first publish and `novo pkg
+# publish` refuses the path until it does.
+termios-nv = "^0.0.1"

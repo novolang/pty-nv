@@ -1,0 +1,118 @@
+// ptymodel_tests.nv — the three ways a child can end, and the one
+// number a shell folds them into.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: pty-nv.<module>.<fn>`.
+//
+// NO PROCESS IS STARTED IN THIS FILE.  `PtyExit` is a value, which is
+// the package's load-bearing decision, and the whole point of a value
+// is that it can be reasoned about away from the thing that produced
+// it.  These assertions are the proof of that claim rather than a
+// convenience.
+//
+// THE VECTOR IS THE SHELL'S, and it is forty years old: a process's
+// wait status reports an exit code for a normal exit and 128 plus the
+// signal number for a killed one.  `bash` prints 130 for a program
+// interrupted with Ctrl-C, and so does every shell anyone has used.
+
+use ptymodel
+use std.test
+use tiosize
+
+@test
+fn test_a_normal_exit_is_its_own_code() [io]
+    test.case("zero")
+    test.assert(ptymodel.shell_status(PtyExited(0)) == 0)
+
+    test.case("and a failure")
+    test.assert(ptymodel.shell_status(PtyExited(2)) == 2)
+
+@test
+fn test_a_killed_child_is_128_plus_the_signal() [io]
+    // 130 is Ctrl-C, and it is the number a user sees in their shell
+    // after interrupting something.  A package that answered 2 here —
+    // SIGINT's own number — would report an interrupted program as one
+    // that exited with a usage error.
+    test.case("SIGINT")
+    test.assert(ptymodel.shell_status(PtySignalled(PTY_SIGINT, false)) == 130)
+
+    test.case("SIGTERM")
+    test.assert(ptymodel.shell_status(PtySignalled(PTY_SIGTERM, false)) == 143)
+
+    test.case("SIGKILL")
+    test.assert(ptymodel.shell_status(PtySignalled(PTY_SIGKILL, false)) == 137)
+
+@test
+fn test_exiting_130_and_being_killed_by_sigint_are_different_facts() [io]
+    // They fold to the same number and they are not the same event: one
+    // program decided, the other did not.  The fold is at the very end,
+    // for a caller that has to answer with one integer, and everything
+    // before that point looks at the three cases.
+    test.case("the same status")
+    test.assert(ptymodel.shell_status(PtyExited(130))
+                == ptymodel.shell_status(PtySignalled(PTY_SIGINT, false)))
+
+@test
+fn test_a_stopped_child_has_not_ended() [io]
+    // SIGTSTP is Ctrl-Z, and SIGTTIN is what a background program gets
+    // for reading the terminal.  Both are a program waiting to be
+    // continued, and a pump that treated either as an exit closes a
+    // pane whose program the user meant to come back to.
+    test.case("stopped is not final")
+    test.assert(not ptymodel.exit_is_final(PtyStopped(PTY_SIGTSTP)))
+
+    test.case("exited is")
+    test.assert(ptymodel.exit_is_final(PtyExited(0)))
+
+    test.case("and so is killed")
+    test.assert(ptymodel.exit_is_final(PtySignalled(PTY_SIGKILL, false)))
+
+@test
+fn test_a_core_dump_is_recorded_because_somebody_can_look_at_it() [io]
+    // The bit is in the wait status and costs nothing to carry, and a
+    // crash that wrote a core is a crash with evidence.
+    let crashed = PtySignalled(PTY_SIGQUIT, true)
+
+    test.case("still a kill")
+    test.assert(ptymodel.shell_status(crashed) == 131)
+
+    test.case("and final")
+    test.assert(ptymodel.exit_is_final(crashed))
+
+@test
+fn test_the_default_spawn_size_agrees_with_every_other_tool() [io]
+    // 24 x 80, which is what `screen` and `tmux` fall back to and what
+    // termios-nv defaults to.  A pty started at anything else has a
+    // child that draws differently from every other terminal on the
+    // machine.
+    let s = ptymodel.default_spawn_size()
+
+    test.case("rows")
+    test.assert(s.rows == 24)
+
+    test.case("cols")
+    test.assert(s.cols == 80)
+
+    test.case("and it is a size termios-nv would accept")
+    test.assert(tiosize.size_is_valid(s))
+
+@test
+fn test_the_signal_numbers_are_the_ones_the_kernel_uses() [io]
+    // Named so a caller does not write a magic number, and worth
+    // asserting because a package that got one wrong would send a
+    // plausible-looking signal to a process that does something else
+    // with it.
+    test.case("SIGHUP")
+    test.assert(PTY_SIGHUP == 1)
+
+    test.case("SIGINT")
+    test.assert(PTY_SIGINT == 2)
+
+    test.case("SIGKILL")
+    test.assert(PTY_SIGKILL == 9)
+
+    test.case("SIGTERM")
+    test.assert(PTY_SIGTERM == 15)
+
+    test.case("SIGWINCH")
+    test.assert(PTY_SIGWINCH == 28)

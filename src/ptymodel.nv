@@ -1,0 +1,284 @@
+// ptymodel.nv — the values a pty is made of.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A PSEUDOTERMINAL IS A PAIR OF DESCRIPTORS THAT PRETEND TO BE A
+// SERIAL LINE.  The kernel gives out a master and a slave; a program
+// reading the master sees what a program writing the slave wrote, and
+// the slave behaves in every other way like a terminal — it has
+// termios attributes, it has a window size, it has a foreground
+// process group, and the kernel raises SIGWINCH and SIGINT on it.
+// That last part is the whole reason ptys exist: a shell running on
+// one behaves exactly as it does on a real terminal, because as far as
+// it can tell it is on one.
+//
+// THE CHILD IS A VALUE, NOT A ROW IN A TABLE.  This is the design
+// decision the rest of the package follows from, and the README argues
+// it: an exit status kept in a process-global table keyed by the
+// master descriptor has to be read in a particular order relative to
+// the close, and a caller who closes first has lost it for good.
+// `PtyChild` carries the process id and `PtyExit` is an ordinary
+// value, so a pump may close a pane's descriptor and report what it
+// exited with afterwards, in whichever order its own code is easiest
+// to read.
+//
+// THE TYPES FOR A TERMINAL'S SHAPE ARE termios-nv's.  A pty pair is
+// two descriptors that are both terminals; a package that modelled one
+// and then re-spelled `struct WinSize` and `struct Termios` would have
+// published two types a consumer of both cannot use in one program at
+// all (`docs/publishing.md` § Public type names are globally unique).
+// So the size in a spawn request is a `TioWinSize` and the attributes
+// are a `TioAttrs`, and this package adds nothing of its own there.
+
+use tioattrs
+use tiosize
+
+// The parent's end of a pty.
+//
+// Everything written here appears as input to the child; everything
+// the child writes comes out here.  It is a terminal too — `TIOCSWINSZ`
+// on it is how a resize reaches the child — which is why
+// `ptyio.master_terminal` exists.
+pub struct PtyMaster
+    fd: Int
+
+// The child's end.
+//
+// Held by the parent only until the child has it: after a successful
+// spawn the parent closes its copy, because a slave the parent still
+// holds open is a slave that never reports EOF when the child exits,
+// and a pump waiting for that EOF waits forever.
+pub struct PtySlave
+    fd: Int
+    // The `/dev/pts/N` path.  Worth carrying: it is what a program
+    // puts in a log, what `ps` shows in its TTY column, and what a
+    // caller passes to something that wants a path rather than a
+    // descriptor.
+    name: Str
+
+// Both ends, before a child exists.
+pub struct PtyPair
+    master: PtyMaster
+    slave: PtySlave
+
+// One variable in the child's environment.
+pub struct PtyEnvVar
+    name: Str
+    value: Str
+
+// What to start, and what it should find when it starts.
+//
+// Built with `ptyopen.spawn_request` and the `with_*` functions rather
+// than written as a literal, so a field added later does not break
+// every caller.
+pub struct PtySpawn
+    // The program and its arguments.  A LIST and not a command
+    // string: a spawn that took a `Str` would have to split it,
+    // splitting on whitespace turns `/opt/my shell/bin/sh` into two
+    // arguments, and splitting with quoting rules means shipping a
+    // shell parser nobody asked for.  A caller who wants a shell to
+    // parse something passes `["/bin/sh", "-c", line]` and has said so.
+    argv: [Str]
+    // Variables to set in the child, applied over the inherited
+    // environment when `inherit_env` is true and used alone when it is
+    // not.
+    env: [PtyEnvVar]
+    // The size the slave starts at, baked in before the exec so the
+    // child's first `TIOCGWINSZ` is already right.  A child that had
+    // to be resized after starting draws one frame at the wrong size,
+    // and for a full-screen program that frame is visible.
+    size: tiosize.TioWinSize
+    // Attributes for the slave, or `None` for the kernel's defaults.
+    // `Some` is for the caller who wants a child started with echo
+    // already off, which is a different thing from turning it off
+    // afterwards — the window in between is a password echoing.
+    attrs: ?tioattrs.TioAttrs
+    // What `$TERM` should say.  Set by the spawner and NOT inherited:
+    // the child is talking to whatever reads the master, not to the
+    // terminal that launched this process, so an inherited value
+    // describes the wrong terminal.  It is also frequently absent — a
+    // terminal emulator started from a window manager's keybinding has
+    // no `$TERM` at all, and a shell whose terminfo initialisation
+    // fails re-echoes whole lines instead of moving the cursor, so
+    // typing "uiop" paints "uiuiioopo".
+    term: Str
+    // Where the child starts, or `None` to inherit.
+    cwd: ?Str
+    // Whether the parent's environment is the base.  False is for a
+    // caller building a deliberately minimal environment.
+    inherit_env: Bool
+
+// A child started on a pty.
+//
+// The process id, and nothing else — because that is all that is
+// needed to signal it, wait for it, and ask whether it is alive, and
+// because keying those off the master descriptor instead is what makes
+// an exit status disappear when the descriptor closes.
+pub struct PtyChild
+    pid: Int
+    // The child's process GROUP, which is its own pid because a pty
+    // child is a session leader.  Carried separately because
+    // `ptychild.signal_group` targets it and the distinction between
+    // it and `pid` is the difference between killing a pane and
+    // killing a pane's shell while its `less` keeps the terminal.
+    pgid: Int
+
+// A running child and the descriptor that talks to it.
+pub struct PtySession
+    master: PtyMaster
+    child: PtyChild
+
+// How a child ended.
+//
+// Three cases and not an integer, because the three are different
+// facts: a program that exited 130 chose to, and a program killed by
+// SIGINT did not.  The shell convention folds them — `shell_status`
+// is that folding, for a caller that wants one number to pass on.
+pub enum PtyExit
+    // Ran and returned this status.
+    PtyExited(code: Int)
+    // Killed by a signal.  `core_dumped` because a crash that wrote a
+    // core is a crash somebody can look at.
+    PtySignalled(signal: Int, core_dumped: Bool)
+    // Stopped rather than ended — SIGTSTP, or SIGTTIN from a
+    // background process that tried to read the terminal.  Not an
+    // exit, and a pump that treated it as one closes a pane whose
+    // program is waiting to be continued.
+    PtyStopped(signal: Int)
+
+// What a read off the master came back with.
+//
+// Three answers in one value, because a pump has to distinguish them
+// and two of them are not errors: bytes arrived; nothing is available
+// right now (`would_block`, on a non-blocking master); the child's
+// last descriptor closed (`at_eof`, and the pump should reap).
+pub struct PtyRead
+    // The caller's buffer with the bytes appended.
+    bytes: [u8]
+    // How many were appended this call.
+    read_count: Int
+    at_eof: Bool
+    would_block: Bool
+
+// What can go wrong.
+pub enum PtyError
+    // `posix_openpt` or `grantpt` refused: no free pty, or
+    // `/dev/pts` is not mounted, which is what a minimal container
+    // looks like.
+    PtyOpenFailed(errno: Int)
+    // The fork refused.
+    PtySpawnFailed(errno: Int)
+    // The fork worked and the exec did not.
+    //
+    // AN ERROR AND NOT AN EXIT STATUS, which takes doing: after the
+    // fork the child is already the child, so a failed exec has no way
+    // to answer the parent except through a descriptor, and the
+    // conventional answer is a diagnostic on stderr and `_exit(127)`.
+    // The parent then cannot tell "there is no such program" from "the
+    // program ran and exited 127" — different bugs, different fixes.
+    // This carries the errno back over a close-on-exec pipe, which
+    // says nothing at all when the exec succeeds.
+    PtyExecFailed(program: Str, errno: Int)
+    // A read from the master refused.
+    PtyReadFailed(errno: Int)
+    // A write to the master refused.  Distinct from a SHORT write,
+    // which is not an error at all — see `ptyio.write`.
+    PtyWriteFailed(errno: Int)
+    // The resize ioctl refused.
+    PtyResizeFailed(errno: Int)
+    // A signal could not be delivered.
+    PtySignalFailed(errno: Int)
+    // The wait refused.  Not the same as the child still running,
+    // which is `None` from `ptychild.try_wait`.
+    PtyWaitFailed(errno: Int)
+    // The child has already been reaped, so there is nothing left to
+    // signal or wait for.
+    PtyChildGone(pid: Int)
+    // The descriptor is not a pty — closed, or never was one.
+    PtyNotAPty(fd: Int)
+    // A poll set was indexed past its end.
+    PtyIndexOutOfRange(index: Int, len: Int)
+
+// The one-line reading of a failure, for a log or a person.
+//
+// ```novo
+// use ptymodel
+//
+// fn main() [io]
+//     let e: PtyError = PtyNotAPty(7)
+//     println(e.message())
+// ```
+impl Error for PtyError
+    fn message(self) -> Str
+        todo("pty-nv.ptymodel.message")
+
+// ── The signals a terminal program actually sends ──────────────────
+//
+// Named so that a caller does not write a magic number, and only the
+// ones that mean something to a pty: the rest are the operating
+// system's and a caller who needs them has a number already.
+
+// Hangup.  What the kernel sends when a terminal goes away, and
+// therefore the right signal for "this pane is closing".
+pub const PTY_SIGHUP = 1
+// Interrupt — what Ctrl-C raises on a terminal.
+pub const PTY_SIGINT = 2
+// Quit — Ctrl-\, and it dumps core.
+pub const PTY_SIGQUIT = 3
+// Uncatchable.  The last resort, after a hangup and a term have been
+// ignored.
+pub const PTY_SIGKILL = 9
+// Terminate.  Catchable, and the polite one.
+pub const PTY_SIGTERM = 15
+// Continue a stopped child.
+pub const PTY_SIGCONT = 18
+// Stop — Ctrl-Z.
+pub const PTY_SIGTSTP = 20
+// The window changed size.  Raised by the kernel on `TIOCSWINSZ`, so a
+// caller never sends this one by hand; it is here because a reader of
+// a `PtySignalled` wants to recognise the number.
+pub const PTY_SIGWINCH = 28
+
+// The shell's one-number convention: the exit code for a normal exit,
+// 128 plus the signal number for a killed one.
+//
+// `[]`, and it is the folding a caller does at the very end — when it
+// has to answer with one integer of its own, because that is what a
+// process exit status is.  Everything before that point should be
+// looking at the three cases.
+//
+// ```novo
+// use ptymodel
+//
+// fn status(e: PtyExit) -> Int
+//     ptymodel.shell_status(e)
+// ```
+pub fn shell_status(e: PtyExit) -> Int []
+    todo("pty-nv.ptymodel.shell_status")
+
+// Whether an exit means the child is gone, as opposed to stopped.
+//
+// The check a pump needs before it tears a pane down: `PtyStopped` is
+// a child waiting to be continued, and closing its descriptor kills a
+// program the user meant to come back to.
+//
+// ```novo
+// use ptymodel
+//
+// fn finished(e: PtyExit) -> Bool
+//     ptymodel.exit_is_final(e)
+// ```
+pub fn exit_is_final(e: PtyExit) -> Bool []
+    todo("pty-nv.ptymodel.exit_is_final")
+
+// A default spawn size: 24 rows by 80 columns, the same fallback
+// `screen` and `tmux` use.
+//
+// ```novo
+// use ptymodel
+//
+// fn size() -> TioWinSize
+//     ptymodel.default_spawn_size()
+// ```
+pub fn default_spawn_size() -> tiosize.TioWinSize []
+    todo("pty-nv.ptymodel.default_spawn_size")

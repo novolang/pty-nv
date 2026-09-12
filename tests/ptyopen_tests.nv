@@ -1,0 +1,152 @@
+// ptyopen_tests.nv — the request is a value, and argv is a list.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`.
+//
+// THE REQUEST BUILDERS ARE `[]`, which is what lets a test assert what
+// a child WOULD be started with before anything is started.  That is
+// not a convenience: "what environment did my pane's shell get" is a
+// question a multiplexer's user asks, and a package where the only way
+// to answer it is to fork cannot be asked it in a test at all.
+
+use ptyopen
+use std.list
+use std.str
+use std.test
+use tioattrs
+use tiosize
+
+@test
+fn test_argv_is_a_list_and_nothing_splits_it() [io]
+    // A spawn that took a `Str` would have to split it, and splitting
+    // on whitespace turns a path with a space in it into two
+    // arguments — which is a bug that only appears on the machine
+    // whose user installed a shell somewhere with a space in the path.
+    let r = ptyopen.spawn_request(["/opt/my shell/bin/sh", "-l"])
+
+    test.case("two arguments, not three")
+    test.assert(list.len(r.argv) == 2)
+
+    test.case("and the first is the whole path")
+    test.assert_eq_str(r.argv[0], "/opt/my shell/bin/sh")
+
+@test
+fn test_a_caller_who_wants_shell_parsing_says_so() [io]
+    // The escape hatch is not a flag, it is `/bin/sh -c` — which is
+    // what a shell parsing a command line actually is, spelled out
+    // where a reader can see it.
+    let r = ptyopen.spawn_request(["/bin/sh", "-c", "ls | wc -l"])
+
+    test.case("three arguments")
+    test.assert(list.len(r.argv) == 3)
+
+    test.case("and the pipeline is one of them")
+    test.assert_eq_str(r.argv[2], "ls | wc -l")
+
+@test
+fn test_a_fresh_request_inherits_the_environment_and_starts_at_24x80() [io]
+    let r = ptyopen.spawn_request(["/bin/sh"])
+
+    test.case("the parent's environment is the base")
+    test.assert(r.inherit_env)
+
+    test.case("24 rows")
+    test.assert(r.size.rows == 24)
+
+    test.case("80 columns")
+    test.assert(r.size.cols == 80)
+
+    test.case("and no attributes are forced on the slave")
+    test.assert_none(r.attrs)
+
+@test
+fn test_a_request_with_no_inherited_environment_starts_empty() [io]
+    // For a caller building a deliberately minimal environment — a
+    // test fixture, a sandbox — where inheriting whatever the
+    // developer had exported is the thing that makes a run
+    // irreproducible.
+    let r = ptyopen.without_parent_env(ptyopen.spawn_request(["/bin/sh"]))
+
+    test.case("nothing inherited")
+    test.assert(not r.inherit_env)
+
+@test
+fn test_environment_variables_accumulate() [io]
+    let r0 = ptyopen.spawn_request(["/bin/sh"])
+    let r1 = ptyopen.with_env(r0, "NOVOMUX", "1")
+    let r2 = ptyopen.with_env(r1, "NOVOMUX_PANE", "3")
+
+    test.case("both are there")
+    test.assert(list.len(r2.env) == 2)
+
+@test
+fn test_the_size_is_part_of_the_request_and_not_something_applied_after() [io]
+    // Baked in before the exec, so the child's first `TIOCGWINSZ` is
+    // already right.  A full-screen program resized after starting
+    // draws one frame at the wrong geometry, and that frame is
+    // visible.
+    let r = ptyopen.with_size(ptyopen.spawn_request(["/bin/sh"]), tiosize.win_size(50, 200))
+
+    test.case("rows")
+    test.assert(r.size.rows == 50)
+
+    test.case("cols")
+    test.assert(r.size.cols == 200)
+
+@test
+fn test_term_is_set_by_the_spawner_and_is_never_empty() [io]
+    // The child is talking to whatever reads the master, not to the
+    // terminal that launched this process — and a shell with no
+    // `$TERM` at all falls back to re-echoing whole lines instead of
+    // moving the cursor, so typing "uiop" paints "uiuiioopo" and
+    // backspace appears to add characters.
+    let r = ptyopen.spawn_request(["/bin/sh"])
+
+    test.case("a default is supplied")
+    test.assert(str.len(r.term) > 0)
+
+    test.case("and it can be chosen")
+    test.assert_eq_str(ptyopen.with_term(r, "xterm-256color").term, "xterm-256color")
+
+@test
+fn test_a_login_shell_is_argv0_with_a_leading_dash() [io]
+    // Forty years old, with no other spelling, and what a user sees is
+    // whether their profile was read — so a multiplexer whose first
+    // pane skipped it has a pane with a different `PATH` from every
+    // other terminal on the machine.
+    let argv = ptyopen.login_argv("/bin/bash")
+
+    test.case("the program is still the shell")
+    test.assert(list.len(argv) > 0)
+
+    test.case("and argv[0] carries the dash")
+    test.assert_eq_str(argv[0], "-bash")
+
+@test
+fn test_attributes_for_the_slave_are_part_of_the_request_too() [io]
+    // Applied BEFORE the exec, which is the point: turning echo off
+    // after the child has started leaves a window in which a password
+    // is echoed.  `None` by default, because the kernel's own
+    // attributes are the right ones for a shell.
+    let plain = ptyopen.spawn_request(["/bin/sh"])
+
+    test.case("nothing forced by default")
+    test.assert_none(plain.attrs)
+
+    match tioattrs.stdin_terminal()
+        Err(_) => test.case("no terminal here to borrow attributes from")
+        Ok(t)  =>
+            match tioattrs.attrs_of(t)
+                Err(_) => test.assert(false)
+                Ok(a)  =>
+                    test.case("and chosen when a caller has a reason")
+                    test.assert_some(ptyopen.with_attrs(plain, a).attrs)
+
+@test
+fn test_a_request_says_where_the_child_starts_only_when_asked() [io]
+    let r = ptyopen.spawn_request(["/bin/sh"])
+
+    test.case("inherited by default")
+    test.assert_none(r.cwd)
+
+    test.case("and chosen when it matters")
+    test.assert_some(ptyopen.with_cwd(r, "/tmp").cwd)

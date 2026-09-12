@@ -1,0 +1,182 @@
+// ptypoll.nv — waiting on many ptys at once, which is what a
+// multiplexer is.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE SET IS THE CALLER'S AND HAS NO CEILING.  A poll that caps at
+// sixteen descriptors and silently drops the rest is a multiplexer
+// whose seventeenth pane never updates — and nothing reports it,
+// because a truncated poll looks exactly like a quiet pane.  A
+// seventeen-pane session is a person with a large monitor, not a
+// mistake, so the set is a list and the only limit is the operating
+// system's.
+//
+// READINESS IS BY INDEX INTO THE SET, not by descriptor.  A pump holds
+// its panes in a list already; answering "which of the things you gave
+// me" saves it the lookup, and it means a dead pane is dropped by
+// index from both lists at once.
+//
+// HANGUP IS SEPARATE FROM READABLE, and a pump needs both.  A
+// descriptor whose child has exited is permanently ready — every poll
+// returns immediately, forever — so a loop that only tested "readable"
+// and read zero bytes spins at a hundred per cent of a core.  That is
+// the single most common bug in a program built on a poll loop, and
+// `PtyReady` reports the hangup separately so the pump reaps and drops
+// the pane instead.
+//
+// THE EXTRA DESCRIPTOR IS FOR EVERYTHING THAT IS NOT A PTY.  The host
+// terminal a multiplexer is displayed on, a control socket, a window
+// system's connection: all of them have to wake the same loop, and a
+// loop that polled only its ptys reacts to a keystroke on the next
+// pty's timeout rather than now.
+
+use ptymodel
+
+// A set of masters to wait on, plus at most one descriptor that is not
+// a pty.
+pub struct PtyPollSet
+    masters: [ptymodel.PtyMaster]
+    // A descriptor that is not a pty — the host terminal, a control
+    // socket, a display connection — or a negative number for none.
+    extra_fd: Int
+
+// What a wait came back with.
+//
+// Indices into the set that produced it, so a pump that holds its
+// panes in the same order reads the answer straight off.
+pub struct PtyReady
+    // Indices of the masters with bytes to read.
+    readable: [Int]
+    // Indices of the masters whose other end has gone.  Reported
+    // separately because a hung-up descriptor is permanently readable,
+    // and a loop that does not distinguish them spins.
+    hungup: [Int]
+    // Whether the extra descriptor fired.
+    extra_ready: Bool
+    // True when the deadline passed with nothing ready.  How a pump
+    // gets its tick.
+    timed_out: Bool
+
+// A set over some masters, with no extra descriptor.
+//
+// ```novo
+// use ptymodel
+// use ptypoll
+//
+// fn watch(ms: [PtyMaster]) -> PtyPollSet
+//     ptypoll.poll_set(ms)
+// ```
+pub fn poll_set(masters: [ptymodel.PtyMaster]) -> PtyPollSet []
+    todo("pty-nv.ptypoll.poll_set")
+
+// The same set with a non-pty descriptor added, so that it wakes the
+// loop too.
+//
+// The host terminal's descriptor is the usual one: a multiplexer that
+// polled only its panes answers a keystroke on the next pane's
+// timeout, and a user feels every millisecond of that.
+//
+// ```novo
+// use ptypoll
+//
+// fn also(s: PtyPollSet, fd: Int) -> PtyPollSet
+//     ptypoll.with_extra(s, fd)
+// ```
+pub fn with_extra(s: PtyPollSet, fd: Int) -> PtyPollSet []
+    todo("pty-nv.ptypoll.with_extra")
+
+// How many masters are in the set.
+//
+// ```novo
+// use ptypoll
+//
+// fn size(s: PtyPollSet) -> Int
+//     ptypoll.set_len(s)
+// ```
+pub fn set_len(s: PtyPollSet) -> Int []
+    todo("pty-nv.ptypoll.set_len")
+
+// The same set with one master removed.
+//
+// What a pump calls when it has reaped a pane.  By index, matching the
+// indices `PtyReady` answers in, so a dead pane leaves both lists in
+// one step.
+//
+// ```novo
+// use ptypoll
+//
+// fn drop_pane(s: PtyPollSet, i: Int) -> Result<PtyPollSet, PtyError>
+//     ptypoll.drop_at(s, i)
+// ```
+pub fn drop_at(s: PtyPollSet, i: Int) -> Result<PtyPollSet, ptymodel.PtyError> []
+    todo("pty-nv.ptypoll.drop_at")
+
+// The master at an index, for a caller acting on what `PtyReady` named.
+//
+// ```novo
+// use ptymodel
+// use ptypoll
+//
+// fn at(s: PtyPollSet, i: Int) -> Result<PtyMaster, PtyError>
+//     ptypoll.master_at(s, i)
+// ```
+pub fn master_at(s: PtyPollSet, i: Int) -> Result<ptymodel.PtyMaster, ptymodel.PtyError> []
+    todo("pty-nv.ptypoll.master_at")
+
+// Wait until something in the set is ready, or the deadline passes.
+//
+// A negative `timeout_ms` waits indefinitely; zero polls and answers at
+// once.  An interrupted wait is retried rather than surfaced, so a
+// caller never sees a spurious wake.
+//
+// The deadline is an argument to the syscall and not a clock this
+// package read, which is why this function is `[io]` and the package
+// declares no `[time]`.
+//
+// ```novo
+// use ptypoll
+//
+// fn tick(s: PtyPollSet) -> Result<PtyReady, PtyError> [io]
+//     ptypoll.wait_ready(s, 100)
+// ```
+pub fn wait_ready(s: PtyPollSet, timeout_ms: Int) -> Result<PtyReady, ptymodel.PtyError> [io]
+    todo("pty-nv.ptypoll.wait_ready")
+
+// Whether the master at an index has bytes to read.
+//
+// ```novo
+// use ptypoll
+//
+// fn has_output(r: PtyReady, i: Int) -> Bool
+//     ptypoll.is_readable(r, i)
+// ```
+pub fn is_readable(r: PtyReady, i: Int) -> Bool []
+    todo("pty-nv.ptypoll.is_readable")
+
+// Whether the master at an index has hung up.
+//
+// The test that keeps a pump off a spinning loop: read what is left,
+// reap the child, drop the index.
+//
+// ```novo
+// use ptypoll
+//
+// fn gone(r: PtyReady, i: Int) -> Bool
+//     ptypoll.is_hungup(r, i)
+// ```
+pub fn is_hungup(r: PtyReady, i: Int) -> Bool []
+    todo("pty-nv.ptypoll.is_hungup")
+
+// Whether anything at all is ready.
+//
+// False exactly when the wait timed out, which is the tick a pump
+// draws a frame on.
+//
+// ```novo
+// use ptypoll
+//
+// fn woke(r: PtyReady) -> Bool
+//     ptypoll.anything_ready(r)
+// ```
+pub fn anything_ready(r: PtyReady) -> Bool []
+    todo("pty-nv.ptypoll.anything_ready")

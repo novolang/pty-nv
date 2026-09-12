@@ -1,0 +1,192 @@
+// ptychild.nv — signalling the child, and finding out how it ended.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE EXIT STATUS OUTLIVES THE DESCRIPTOR, and that is the whole point
+// of this module.  A design that keeps the status in a table keyed by
+// the master descriptor has to say, in a comment, that the status must
+// be read BETWEEN noticing the exit and closing the master — because
+// the close frees the row.  A caller who closes first has lost the
+// status for good, and nothing tells them: the answer is simply 0, as
+// if the child had succeeded.
+//
+// `PtyChild` carries the process id, `wait` answers a `PtyExit`, and a
+// `PtyExit` is an ordinary value.  A pump may close a pane, tidy up,
+// and report what it exited with three functions later.
+//
+// THE SIGNAL GOES TO THE GROUP, NOT THE LEADER.  A pane's child is a
+// shell, and the program the user is actually looking at is the
+// shell's child — `less`, `vim`, a build.  A SIGHUP to the shell alone
+// leaves that grandchild holding the terminal, and what the user sees
+// is a pane that will not close.  The kernel already knows the right
+// set, because a pty child is a session leader and its foreground
+// process group is what Ctrl-C reaches; `signal_group` is the same
+// target, and `signal` is there for the caller who genuinely means the
+// one process.
+//
+// REAPING IS NOT OPTIONAL.  A child that exited and was not waited for
+// is a zombie, and a multiplexer that opened and closed a hundred
+// panes has a hundred of them.  `try_wait` in the pump loop is what
+// prevents that, and it is cheap — one non-blocking call per tick per
+// pane that is still open.
+
+use ptymodel
+
+// Has the child ended?  Answers without waiting.
+//
+// `Ok(None)` is "still running" and is not an error.  `Ok(Some(e))`
+// both reports the end and reaps the child, so the status is taken
+// exactly once — a second call answers `PtyChildGone`.
+//
+// ```novo
+// use ptychild
+// use ptymodel
+//
+// fn check(c: PtyChild) -> Result<?PtyExit, PtyError> [io]
+//     ptychild.try_wait(c)
+// ```
+pub fn try_wait(c: ptymodel.PtyChild) -> Result<?ptymodel.PtyExit, ptymodel.PtyError> [io]
+    todo("pty-nv.ptychild.try_wait")
+
+// Wait for the child to end, and reap it.
+//
+// Blocks.  For a caller running one child; a pump uses `try_wait`,
+// because blocking here stops every other pane.
+//
+// ```novo
+// use ptychild
+// use ptymodel
+//
+// fn finish(c: PtyChild) -> Result<PtyExit, PtyError> [io]
+//     ptychild.wait(c)
+// ```
+pub fn wait(c: ptymodel.PtyChild) -> Result<ptymodel.PtyExit, ptymodel.PtyError> [io]
+    todo("pty-nv.ptychild.wait")
+
+// Whether the child is still running.
+//
+// A question, not a reap: it does not consume the exit status, so a
+// caller that asked this and then called `wait` still gets the status.
+//
+// ```novo
+// use ptychild
+// use ptymodel
+//
+// fn alive(c: PtyChild) -> Bool [io]
+//     ptychild.is_running(c)
+// ```
+pub fn is_running(c: ptymodel.PtyChild) -> Bool [io]
+    todo("pty-nv.ptychild.is_running")
+
+// Send a signal to the child process alone.
+//
+// Rarely the right one.  A pane's child is a shell and the program the
+// user is looking at is the shell's child, so this reaches the shell
+// and not `less`.  `signal_group` is what "close this pane" means.
+//
+// ```novo
+// use ptychild
+// use ptymodel
+//
+// fn nudge(c: PtyChild) -> ?PtyError [io]
+//     ptychild.signal(c, PTY_SIGCONT)
+// ```
+pub fn signal(c: ptymodel.PtyChild, sig: Int) -> ?ptymodel.PtyError [io]
+    todo("pty-nv.ptychild.signal")
+
+// Send a signal to the child's whole process group.
+//
+// What Ctrl-C reaches, and what a kill-pane should send.  The kernel
+// already knows the set: a pty child is a session leader and the
+// foreground process group is its.
+//
+// ```novo
+// use ptychild
+// use ptymodel
+//
+// fn interrupt(c: PtyChild) -> ?PtyError [io]
+//     ptychild.signal_group(c, PTY_SIGINT)
+// ```
+pub fn signal_group(c: ptymodel.PtyChild, sig: Int) -> ?ptymodel.PtyError [io]
+    todo("pty-nv.ptychild.signal_group")
+
+// Hang up: SIGHUP to the process group.
+//
+// The correct "this pane is closing".  A hangup is what the kernel
+// itself sends when a terminal goes away, so every program that could
+// have handled a terminal disappearing handles this one.
+//
+// ```novo
+// use ptychild
+// use ptymodel
+//
+// fn close_it(c: PtyChild) -> ?PtyError [io]
+//     ptychild.hangup(c)
+// ```
+pub fn hangup(c: ptymodel.PtyChild) -> ?ptymodel.PtyError [io]
+    todo("pty-nv.ptychild.hangup")
+
+// Terminate, then kill: SIGTERM to the group, then SIGKILL to whatever
+// is still there after `grace_ms`.
+//
+// The escalation everybody writes by hand and half of them get wrong,
+// usually by killing immediately — which loses a shell's history file
+// and an editor's swap file — or by waiting forever for a program that
+// caught SIGTERM and ignored it.
+//
+// The grace period is a poll with a deadline, not a clock read, which
+// is why this function is `[io]` and the package declares no `[time]`.
+//
+// ```novo
+// use ptychild
+// use ptymodel
+//
+// fn stop(c: PtyChild) -> Result<PtyExit, PtyError> [io]
+//     ptychild.terminate(c, 2000)
+// ```
+pub fn terminate(c: ptymodel.PtyChild,
+                 grace_ms: Int) -> Result<ptymodel.PtyExit, ptymodel.PtyError> [io]
+    todo("pty-nv.ptychild.terminate")
+
+// The child's process id.
+//
+// ```novo
+// use ptychild
+// use ptymodel
+//
+// fn which(c: PtyChild) -> Int
+//     ptychild.pid_of(c)
+// ```
+pub fn pid_of(c: ptymodel.PtyChild) -> Int []
+    todo("pty-nv.ptychild.pid_of")
+
+// The child's process group id.
+//
+// ```novo
+// use ptychild
+// use ptymodel
+//
+// fn group(c: PtyChild) -> Int
+//     ptychild.pgid_of(c)
+// ```
+pub fn pgid_of(c: ptymodel.PtyChild) -> Int []
+    todo("pty-nv.ptychild.pgid_of")
+
+// The process group currently in the FOREGROUND on a master — which
+// is to say, what the user is actually typing at.
+//
+// `tcgetpgrp`.  Different from `pgid_of` as soon as the shell runs
+// anything: the shell's group is the session's, and the foreground
+// group is the pipeline's.  It is how a multiplexer's status bar shows
+// the running command rather than the word "bash", and how a pane can
+// tell whether it is safe to close.
+//
+// ```novo
+// use ptychild
+// use ptymodel
+//
+// fn busy(m: PtyMaster) -> Result<Int, PtyError> [io]
+//     ptychild.foreground_group(m)
+// ```
+pub fn foreground_group(m: ptymodel.PtyMaster) -> Result<Int, ptymodel.PtyError> [io]
+    todo("pty-nv.ptychild.foreground_group")
