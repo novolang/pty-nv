@@ -1,6 +1,6 @@
 [package]
 name        = "pty-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "Pseudoterminals as values: open a pair, spawn a child on the slave with an argv rather than a command string, read and write the master in chunks, resize so the kernel raises SIGWINCH in the child's process group, signal the group rather than the leader, and wait with an exit status that outlives the descriptor.  The readiness loop a multiplexer runs over many ptys, with no cap on how many.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
